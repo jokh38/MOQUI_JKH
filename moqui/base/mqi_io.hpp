@@ -778,7 +778,22 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
     dose_grid_scaling_elem.SetByteValue(dose_grid_str.c_str(), dose_grid_str.length());
     ds.Insert(dose_grid_scaling_elem);
     
-    // Image Pixel Module
+    // Image Pixel Module - Required tags for pixel data
+
+    // Samples Per Pixel (0x0028, 0x0002) - Required
+    gdcm::DataElement samples_per_pixel(gdcm::Tag(0x0028, 0x0002));
+    samples_per_pixel.SetVR(gdcm::VR::US);
+    uint16_t samples_val = 1;  // Grayscale
+    samples_per_pixel.SetByteValue(reinterpret_cast<const char*>(&samples_val), sizeof(uint16_t));
+    ds.Insert(samples_per_pixel);
+
+    // Photometric Interpretation (0x0028, 0x0004) - Required
+    gdcm::DataElement photometric_interpretation(gdcm::Tag(0x0028, 0x0004));
+    photometric_interpretation.SetVR(gdcm::VR::CS);
+    photometric_interpretation.SetByteValue("MONOCHROME2", strlen("MONOCHROME2"));
+    ds.Insert(photometric_interpretation);
+
+    // Bits Allocated
     gdcm::DataElement bits_allocated(gdcm::Tag(0x0028, 0x0100));
     bits_allocated.SetVR(gdcm::VR::US);
     uint16_t bits_alloc_val = 16;
@@ -822,23 +837,32 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
     number_of_frames.SetByteValue(frames_str.c_str(), frames_str.length());
     ds.Insert(number_of_frames);
 
-    // Pixel Data - only write actual data size
+    // Pixel Data - Create a persistent copy to avoid memory issues
+    size_t pixel_data_size = pixel_data.size() * sizeof(uint16_t);
+    char* pixel_buffer = new char[pixel_data_size];
+    std::memcpy(pixel_buffer, pixel_data.data(), pixel_data_size);
+
     gdcm::DataElement pixel_data_elem(gdcm::Tag(0x7FE0, 0x0010));
     pixel_data_elem.SetVR(gdcm::VR::OW);
-    size_t pixel_data_size = pixel_data.size() * sizeof(uint16_t);
-    pixel_data_elem.SetByteValue(reinterpret_cast<const char*>(pixel_data.data()),
-                               pixel_data_size);
+    pixel_data_elem.SetByteValue(pixel_buffer, pixel_data_size);
     ds.Insert(pixel_data_elem);
-    
+
     // Write the file
     gdcm::Writer writer;
     writer.SetFile(file);
-    writer.SetFileName((filepath + "/" + filename + ".dcm").c_str());
-    
-    if (!writer.Write()) {
-        std::cout << "Error: Failed to write DICOM file: " << filepath + "/" + filename + ".dcm" << std::endl;
+    std::string output_filename = filepath + "/" + filename + ".dcm";
+    writer.SetFileName(output_filename.c_str());
+
+    bool write_success = writer.Write();
+
+    // Clean up the pixel buffer after write
+    delete[] pixel_buffer;
+
+    if (!write_success) {
+        std::cout << "Error: Failed to write DICOM file: " << output_filename << std::endl;
     } else {
-        std::cout << "Successfully wrote DICOM file: " << filepath + "/" + filename + ".dcm" << std::endl;
+        std::cout << "Successfully wrote DICOM file: " << output_filename << std::endl;
+        std::cout << "File size: " << (pixel_data_size / 1024.0) << " KB (pixel data only)" << std::endl;
     }
 }
 
