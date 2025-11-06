@@ -627,6 +627,23 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
                      const uint32_t        length,
                      const mqi::vec3<ijk_t>& dim,
                      const bool            is_2cm_mode) {
+    // Create persistent strings FIRST to ensure they outlive GDCM operations
+    // These strings must exist until writer.Write() completes
+    gdcm::UIDGenerator uid_generator;
+    std::string sop_instance_uid = uid_generator.Generate();
+    std::string study_instance_uid = uid_generator.Generate();
+    std::string series_instance_uid = uid_generator.Generate();
+
+    std::ostringstream pixel_spacing_stream;
+    pixel_spacing_stream << std::fixed << std::setprecision(6) << "1.0\\1.0";
+    std::string pixel_spacing_str = pixel_spacing_stream.str();
+
+    std::ostringstream image_pos_stream;
+    image_pos_stream << std::fixed << std::setprecision(6) << "0.0\\0.0\\0.0";
+    std::string image_pos_str = image_pos_stream.str();
+
+    std::string frames_str = std::to_string(dim.z);
+
     // Create a copy of scorer data and apply scale
     // For 2cm mode, allocate only 2D slice size (dim.x * dim.y * dim.z where dim.y should be 1)
     std::vector<double> dose_data;
@@ -646,7 +663,7 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
             }
         }
     }
-    
+
     // Calculate maximum dose for scaling
     double max_dose = 0.0;
     for (size_t i = 0; i < dose_data.size(); i++) {
@@ -660,87 +677,84 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
 
     // Scale to 16-bit unsigned integer (DICOM compliant)
     double scale_factor = (max_dose > 0) ? 65535.0 / max_dose : 1.0;
+
+    // Create dose_grid_str BEFORE using it
+    double dose_grid_scaling = (max_dose > 0) ? 1.0 / scale_factor : 1.0;
+    std::ostringstream dose_grid_stream;
+    dose_grid_stream << std::fixed << std::setprecision(10) << dose_grid_scaling;
+    std::string dose_grid_str = dose_grid_stream.str();
+
     std::vector<uint16_t> pixel_data;
     pixel_data.resize(dose_data.size());
 
     for (size_t i = 0; i < dose_data.size(); i++) {
         pixel_data[i] = static_cast<uint16_t>(dose_data[i] * scale_factor);
     }
-    
+
     // Create DICOM file
     gdcm::File file;
     gdcm::DataSet& ds = file.GetDataSet();
-    
+
     // File Meta Information
     gdcm::FileMetaInformation& fmi = file.GetHeader();
     fmi.SetDataSetTransferSyntax(gdcm::TransferSyntax::ImplicitVRLittleEndian);
-    
+
     // SOP Class UID for RT Dose Storage
     gdcm::DataElement sop_class_uid(gdcm::Tag(0x0008, 0x0016));
     sop_class_uid.SetVR(gdcm::VR::UI);
     sop_class_uid.SetByteValue("1.2.840.10008.5.1.4.1.1.481.2", strlen("1.2.840.10008.5.1.4.1.1.481.2"));
     ds.Insert(sop_class_uid);
-    
-    // SOP Instance UID (generate unique)
-    gdcm::UIDGenerator uid_generator;
-    std::string sop_instance_uid = uid_generator.Generate();
+
+    // SOP Instance UID (use persistent string)
     gdcm::DataElement sop_instance_uid_elem(gdcm::Tag(0x0008, 0x0018));
     sop_instance_uid_elem.SetVR(gdcm::VR::UI);
     sop_instance_uid_elem.SetByteValue(sop_instance_uid.c_str(), sop_instance_uid.length());
     ds.Insert(sop_instance_uid_elem);
-    
-    // Study Instance UID (generate unique)
-    std::string study_instance_uid = uid_generator.Generate();
+
+    // Study Instance UID (use persistent string)
     gdcm::DataElement study_instance_uid_elem(gdcm::Tag(0x0020, 0x000D));
     study_instance_uid_elem.SetVR(gdcm::VR::UI);
     study_instance_uid_elem.SetByteValue(study_instance_uid.c_str(), study_instance_uid.length());
     ds.Insert(study_instance_uid_elem);
-    
-    // Series Instance UID (generate unique)
-    std::string series_instance_uid = uid_generator.Generate();
+
+    // Series Instance UID (use persistent string)
     gdcm::DataElement series_instance_uid_elem(gdcm::Tag(0x0020, 0x000E));
     series_instance_uid_elem.SetVR(gdcm::VR::UI);
     series_instance_uid_elem.SetByteValue(series_instance_uid.c_str(), series_instance_uid.length());
     ds.Insert(series_instance_uid_elem);
-    
+
     // Modality
     gdcm::DataElement modality(gdcm::Tag(0x0008, 0x0060));
     modality.SetVR(gdcm::VR::CS);
     modality.SetByteValue("RTDOSE", strlen("RTDOSE"));
     ds.Insert(modality);
-    
+
     // Series Number
     gdcm::DataElement series_number(gdcm::Tag(0x0020, 0x0011));
     series_number.SetVR(gdcm::VR::IS);
     series_number.SetByteValue("1", strlen("1"));
     ds.Insert(series_number);
-    
+
     // Image dimensions
     gdcm::DataElement rows(gdcm::Tag(0x0028, 0x0010));
     rows.SetVR(gdcm::VR::US);
     uint16_t rows_val = static_cast<uint16_t>(dim.y);
     rows.SetByteValue(reinterpret_cast<const char*>(&rows_val), sizeof(uint16_t));
     ds.Insert(rows);
-    
+
     gdcm::DataElement columns(gdcm::Tag(0x0028, 0x0011));
     columns.SetVR(gdcm::VR::US);
     uint16_t cols_val = static_cast<uint16_t>(dim.x);
     columns.SetByteValue(reinterpret_cast<const char*>(&cols_val), sizeof(uint16_t));
     ds.Insert(columns);
-    
-    // Pixel Spacing (assuming 1mm spacing for now)
-    std::ostringstream pixel_spacing_stream;
-    pixel_spacing_stream << std::fixed << std::setprecision(6) << "1.0\\1.0";
-    std::string pixel_spacing_str = pixel_spacing_stream.str();
+
+    // Pixel Spacing (use persistent string)
     gdcm::DataElement pixel_spacing(gdcm::Tag(0x0028, 0x0030));
     pixel_spacing.SetVR(gdcm::VR::DS);
     pixel_spacing.SetByteValue(pixel_spacing_str.c_str(), pixel_spacing_str.length());
     ds.Insert(pixel_spacing);
-    
-    // Image Position Patient (assuming origin at 0,0,0)
-    std::ostringstream image_pos_stream;
-    image_pos_stream << std::fixed << std::setprecision(6) << "0.0\\0.0\\0.0";
-    std::string image_pos_str = image_pos_stream.str();
+
+    // Image Position Patient (use persistent string)
     gdcm::DataElement image_position(gdcm::Tag(0x0020, 0x0032));
     image_position.SetVR(gdcm::VR::DS);
     image_position.SetByteValue(image_pos_str.c_str(), image_pos_str.length());
@@ -757,22 +771,18 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
     dose_units.SetVR(gdcm::VR::CS);
     dose_units.SetByteValue("GY", strlen("GY"));
     ds.Insert(dose_units);
-    
+
     gdcm::DataElement dose_type(gdcm::Tag(0x300A, 0x0004));
     dose_type.SetVR(gdcm::VR::CS);
     dose_type.SetByteValue("PHYSICAL", strlen("PHYSICAL"));
     ds.Insert(dose_type);
-    
+
     gdcm::DataElement dose_summation_type(gdcm::Tag(0x300A, 0x0006));
     dose_summation_type.SetVR(gdcm::VR::CS);
     dose_summation_type.SetByteValue("VOLUME", strlen("VOLUME"));
     ds.Insert(dose_summation_type);
-    
-    // Dose Grid Scaling
-    double dose_grid_scaling = (max_dose > 0) ? 1.0 / scale_factor : 1.0;
-    std::ostringstream dose_grid_stream;
-    dose_grid_stream << std::fixed << std::setprecision(10) << dose_grid_scaling;
-    std::string dose_grid_str = dose_grid_stream.str();
+
+    // Dose Grid Scaling (use persistent string created earlier)
     gdcm::DataElement dose_grid_scaling_elem(gdcm::Tag(0x3004, 0x000A));
     dose_grid_scaling_elem.SetVR(gdcm::VR::DS);
     dose_grid_scaling_elem.SetByteValue(dose_grid_str.c_str(), dose_grid_str.length());
@@ -828,23 +838,22 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
     rescale_slope.SetByteValue(dose_grid_str.c_str(), dose_grid_str.length());
     ds.Insert(rescale_slope);
     
-    // Number of Frames
+    // Number of Frames (use persistent string created earlier)
     gdcm::DataElement number_of_frames(gdcm::Tag(0x0028, 0x0008));
     number_of_frames.SetVR(gdcm::VR::IS);
     // For 2cm mode, should be 1 frame (single 2cm slice)
     // For normal mode, number of z slices
-    std::string frames_str = std::to_string(dim.z);
     number_of_frames.SetByteValue(frames_str.c_str(), frames_str.length());
     ds.Insert(number_of_frames);
 
-    // Pixel Data - Create a persistent copy to avoid memory issues
+    // Pixel Data - Keep the vector alive until after writer.Write()
+    // GDCM may hold references to this data
     size_t pixel_data_size = pixel_data.size() * sizeof(uint16_t);
-    char* pixel_buffer = new char[pixel_data_size];
-    std::memcpy(pixel_buffer, pixel_data.data(), pixel_data_size);
 
     gdcm::DataElement pixel_data_elem(gdcm::Tag(0x7FE0, 0x0010));
     pixel_data_elem.SetVR(gdcm::VR::OW);
-    pixel_data_elem.SetByteValue(pixel_buffer, pixel_data_size);
+    // SetByteValue makes a copy of the data, so it's safe
+    pixel_data_elem.SetByteValue(reinterpret_cast<const char*>(pixel_data.data()), pixel_data_size);
     ds.Insert(pixel_data_elem);
 
     // Write the file
@@ -855,8 +864,8 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
 
     bool write_success = writer.Write();
 
-    // Clean up the pixel buffer after write
-    delete[] pixel_buffer;
+    // All data (pixel_data vector, strings) will be cleaned up automatically
+    // when the function exits, AFTER writer.Write() completes
 
     if (!write_success) {
         std::cout << "Error: Failed to write DICOM file: " << output_filename << std::endl;
