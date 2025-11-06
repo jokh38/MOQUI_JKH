@@ -1610,13 +1610,14 @@ public:
                                             vol_size);
                 } else if (!this->output_format.compare("dcm")) {
                     // 새로운 DCM 형식 저장 추가
+                    // Use actual geometry dimension instead of dcm_.dim_
                     mqi::io::save_to_dcm<R>(
                         this->world->children[c_ind]->scorers[s_ind],
                         this->particles_per_history,
                         this->output_path,
                         filename,
                         vol_size,
-                        this->dcm_.dim_,  // dimension 전달
+                        dim,  // Use actual geometry dimension
                         this->twoCentimeterMode  // 2cm mode 정보 전달
                     );
                 } else {

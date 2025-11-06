@@ -628,16 +628,21 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
                      const mqi::vec3<ijk_t>& dim,
                      const bool            is_2cm_mode) {
     // Create a copy of scorer data and apply scale
+    // For 2cm mode, allocate only 2D slice size (dim.x * dim.y * dim.z where dim.y should be 1)
     std::vector<double> dose_data;
-    dose_data.resize(dim.x * dim.y * dim.z, 0.0);
-    
+    size_t actual_size = static_cast<size_t>(dim.x) * dim.y * dim.z;
+    dose_data.resize(actual_size, 0.0);
+
     // Extract data from scorer
     for (int ind = 0; ind < src->max_capacity_; ind++) {
         if (src->data_[ind].key1 != mqi::empty_pair &&
             src->data_[ind].key2 != mqi::empty_pair &&
             src->data_[ind].value > 0) {
-            if (src->data_[ind].key1 < dose_data.size()) {
-                dose_data[src->data_[ind].key1] += src->data_[ind].value * scale;
+            mqi::key_t key = src->data_[ind].key1;
+            if (key < actual_size) {
+                dose_data[key] += src->data_[ind].value * scale;
+            } else {
+                std::cout << "Warning: key out of bounds: " << key << " >= " << actual_size << std::endl;
             }
         }
     }
@@ -647,12 +652,17 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
     for (size_t i = 0; i < dose_data.size(); i++) {
         if (dose_data[i] > max_dose) max_dose = dose_data[i];
     }
-    
+
+    std::cout << "DCM Save Info - Dimension: (" << dim.x << ", " << dim.y << ", " << dim.z << ")" << std::endl;
+    std::cout << "DCM Save Info - Data size: " << dose_data.size() << " voxels" << std::endl;
+    std::cout << "DCM Save Info - Max dose: " << max_dose << std::endl;
+    std::cout << "DCM Save Info - 2cm mode: " << (is_2cm_mode ? "true" : "false") << std::endl;
+
     // Scale to 16-bit unsigned integer (DICOM compliant)
     double scale_factor = (max_dose > 0) ? 65535.0 / max_dose : 1.0;
     std::vector<uint16_t> pixel_data;
     pixel_data.resize(dose_data.size());
-    
+
     for (size_t i = 0; i < dose_data.size(); i++) {
         pixel_data[i] = static_cast<uint16_t>(dose_data[i] * scale_factor);
     }
@@ -806,15 +816,18 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
     // Number of Frames
     gdcm::DataElement number_of_frames(gdcm::Tag(0x0028, 0x0008));
     number_of_frames.SetVR(gdcm::VR::IS);
-    std::string frames_str = is_2cm_mode ? "1" : std::to_string(dim.z);
+    // For 2cm mode, should be 1 frame (single 2cm slice)
+    // For normal mode, number of z slices
+    std::string frames_str = std::to_string(dim.z);
     number_of_frames.SetByteValue(frames_str.c_str(), frames_str.length());
     ds.Insert(number_of_frames);
-    
-    // Pixel Data
+
+    // Pixel Data - only write actual data size
     gdcm::DataElement pixel_data_elem(gdcm::Tag(0x7FE0, 0x0010));
     pixel_data_elem.SetVR(gdcm::VR::OW);
+    size_t pixel_data_size = pixel_data.size() * sizeof(uint16_t);
     pixel_data_elem.SetByteValue(reinterpret_cast<const char*>(pixel_data.data()),
-                               pixel_data.size() * sizeof(uint16_t));
+                               pixel_data_size);
     ds.Insert(pixel_data_elem);
     
     // Write the file
