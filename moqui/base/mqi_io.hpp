@@ -21,16 +21,12 @@
 #include <moqui/base/mqi_scorer.hpp>
 
 // GDCM headers for DICOM support
-#include "gdcmAttribute.h"
 #include "gdcmDataElement.h"
 #include "gdcmDataSet.h"
 #include "gdcmFile.h"
 #include "gdcmImage.h"
 #include "gdcmImageWriter.h"
 #include "gdcmUIDGenerator.h"
-#include "gdcmWriter.h"
-#include "gdcmItem.h"
-#include "gdcmSequenceOfItems.h"
 
 namespace mqi
 {
@@ -630,20 +626,21 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
                      const mqi::vec3<ijk_t>& dim,
                      const bool            is_2cm_mode) {
     // ================================================================================
-    // PHASE 1: Data Preparation (identical to Raw format save_to_bin)
+    // PHASE 1: Data Preparation
     // ================================================================================
+    // Extract dose data from scorer hash table and convert to DICOM-compliant format.
     // This phase follows the same pattern as save_to_bin():
     // - Extract scorer data into std::vector
-    // - Apply scaling
-    // - Convert to appropriate data type
-    // All data is stored in STL containers with automatic memory management (RAII)
+    // - Apply user-specified scaling factor
+    // - Convert to 16-bit unsigned integer (DICOM RT Dose standard)
+    // - Calculate Dose Grid Scaling for accurate dose reconstruction
 
-    // Create a copy of scorer data and apply scale
+    // Create dose data array from sparse scorer structure
     std::vector<double> dose_data;
     size_t actual_size = static_cast<size_t>(dim.x) * dim.y * dim.z;
     dose_data.resize(actual_size, 0.0);
 
-    // Extract data from scorer (same as save_to_bin)
+    // Extract and accumulate dose values from hash table
     for (int ind = 0; ind < src->max_capacity_; ind++) {
         if (src->data_[ind].key1 != mqi::empty_pair &&
             src->data_[ind].key2 != mqi::empty_pair &&
@@ -657,7 +654,7 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
         }
     }
 
-    // Calculate maximum dose for scaling
+    // Find maximum dose for dynamic range scaling
     double max_dose = 0.0;
     for (size_t i = 0; i < dose_data.size(); i++) {
         if (dose_data[i] > max_dose) max_dose = dose_data[i];
@@ -668,11 +665,12 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
     std::cout << "DCM Save Info - Max dose: " << max_dose << std::endl;
     std::cout << "DCM Save Info - 2cm mode: " << (is_2cm_mode ? "true" : "false") << std::endl;
 
-    // Scale to 16-bit unsigned integer (DICOM compliant)
+    // Scale dose values to 16-bit unsigned integer range [0, 65535]
+    // Dose Grid Scaling tag (0x3004,0x000A) stores the inverse to reconstruct actual dose
     double scale_factor = (max_dose > 0) ? 65535.0 / max_dose : 1.0;
     double dose_grid_scaling = (max_dose > 0) ? 1.0 / scale_factor : 1.0;
 
-    // Convert to pixel data (same pattern as save_to_bin)
+    // Convert floating-point dose to 16-bit unsigned integer pixel data
     std::vector<uint16_t> pixel_data;
     pixel_data.resize(dose_data.size());
 
@@ -683,14 +681,16 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
     // ================================================================================
     // PHASE 2: DICOM Metadata Preparation
     // ================================================================================
-    // Prepare all string data BEFORE creating GDCM objects to ensure proper lifetime.
-    // All strings must remain valid until after writer.Write() completes.
+    // Prepare all metadata strings with proper lifetime management.
+    // All strings must remain valid until ImageWriter.Write() completes.
 
+    // Generate unique DICOM identifiers
     gdcm::UIDGenerator uid_generator;
     std::string sop_instance_uid = uid_generator.Generate();
     std::string study_instance_uid = uid_generator.Generate();
     std::string series_instance_uid = uid_generator.Generate();
 
+    // Format spatial information strings (DICOM uses backslash separator)
     std::ostringstream pixel_spacing_stream;
     pixel_spacing_stream << std::fixed << std::setprecision(6) << "1.0\\1.0";
     std::string pixel_spacing_str = pixel_spacing_stream.str();
@@ -699,6 +699,7 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
     image_pos_stream << std::fixed << std::setprecision(6) << "0.0\\0.0\\0.0";
     std::string image_pos_str = image_pos_stream.str();
 
+    // Format Dose Grid Scaling with high precision
     std::ostringstream dose_grid_stream;
     dose_grid_stream << std::fixed << std::setprecision(10) << dose_grid_scaling;
     std::string dose_grid_str = dose_grid_stream.str();
@@ -707,36 +708,77 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
     std::string output_filename = filepath + "/" + filename + ".dcm";
 
     // ================================================================================
-    // PHASE 3: DICOM File Writing (using nested scope for safe memory management)
+    // PHASE 3: DICOM File Writing using Image API (Memory-Safe Approach)
     // ================================================================================
-    // IMPORTANT: This uses a nested scope pattern to ensure safe destruction order.
     //
-    // Why nested scopes are necessary:
-    // - GDCM library expects heap-allocated objects but we use stack allocation
-    // - Writer destructor may attempt to access/free File object's internal memory
-    // - If Writer destructs AFTER File, it accesses freed memory → crash
-    // - Solution: Nest Writer scope inside File scope to guarantee proper order
+    // MEMORY MANAGEMENT STRATEGY:
+    // ---------------------------
+    // This implementation uses gdcm::Image API instead of low-level DataElement API
+    // to solve the "free(): invalid size" memory corruption error.
     //
-    // Destruction order:
-    //   1. Inner scope ends → Writer destructs first (releases File references)
-    //   2. Outer scope ends → File destructs safely (no dangling references)
+    // ROOT CAUSE OF PREVIOUS ERROR:
+    // - Old approach: DataElement::SetByteValue(pixel_data.data(), size)
+    // - Problem: GDCM stored a POINTER to std::vector's internal buffer
+    // - When File destructs, GDCM tries to free() the buffer
+    // - But the buffer was allocated by std::vector (C++ new[])
+    // - Allocator mismatch causes: "free(): invalid size" crash
     //
-    // This pattern mimics save_to_bin() behavior:
-    //   save_to_bin: ofstream.write() → ofstream.close() → automatic cleanup
-    //   save_to_dcm: writer.Write() → writer destructs → file destructs
+    // SOLUTION - Image API:
+    // - gdcm::Image::SetBuffer() COPIES pixel data into GDCM's internal storage
+    // - GDCM owns the copied data and manages its lifetime
+    // - Our std::vector destructs independently without conflict
+    // - Clean separation of ownership prevents memory corruption
     //
-    // All pixel_data and metadata strings remain valid throughout this entire block
-    // because they were created in the outer function scope (Phase 1 and 2).
+    // IMPLEMENTATION PATTERN:
+    // 1. Create gdcm::Image and configure pixel format
+    // 2. Image copies pixel data (via SetBuffer)
+    // 3. Create gdcm::File and add RT Dose specific tags manually
+    // 4. Use gdcm::ImageWriter to write File + Image together
+    // 5. Safe destruction: Writer → Image → File → pixel_data vector
+    //
+    // NOTE: We use HYBRID approach because:
+    // - Image API handles pixel data memory safely
+    // - Manual tags preserve RT Dose Storage (SOP Class 1.2.840.10008.5.1.4.1.1.481.2)
+    // - Pure Image API would create CT/MR images, not RT Dose
+    // ================================================================================
 
-    {   // Outer scope: GDCM File object lifetime
+    {   // Scope for GDCM objects (ensures proper destruction order)
+
+        // Step 1: Create Image object and configure pixel data
+        // -------------------------------------------------------
+        // gdcm::Image manages pixel data with proper memory ownership
+        gdcm::Image image;
+        image.SetNumberOfDimensions(3);  // RT Dose is always 3D (multi-frame)
+        image.SetDimension(0, static_cast<unsigned int>(dim.x));  // Columns
+        image.SetDimension(1, static_cast<unsigned int>(dim.y));  // Rows
+        image.SetDimension(2, static_cast<unsigned int>(dim.z));  // Frames
+
+        // Configure pixel format for 16-bit grayscale
+        image.SetPixelFormat(gdcm::PixelFormat::UINT16);
+        image.SetPhotometricInterpretation(gdcm::PhotometricInterpretation::MONOCHROME2);
+
+        // CRITICAL: SetBuffer COPIES pixel data into Image's internal storage
+        // This prevents the memory ownership conflict that caused "free(): invalid size"
+        size_t pixel_data_size = pixel_data.size() * sizeof(uint16_t);
+        image.SetBuffer(reinterpret_cast<const char*>(pixel_data.data()), pixel_data_size);
+
+        // Step 2: Create File and set File Meta Information
+        // ---------------------------------------------------
         gdcm::File file;
-        gdcm::DataSet& ds = file.GetDataSet();
-
-        // File Meta Information
         gdcm::FileMetaInformation& fmi = file.GetHeader();
+
+        // RT Dose Storage SOP Class UID
+        fmi.SetMediaStorageSOPClassUID("1.2.840.10008.5.1.4.1.1.481.2");
+        fmi.SetMediaStorageSOPInstanceUID(sop_instance_uid);
         fmi.SetDataSetTransferSyntax(gdcm::TransferSyntax::ImplicitVRLittleEndian);
 
-        // SOP Class UID for RT Dose Storage
+        // Step 3: Add DICOM tags to DataSet
+        // ---------------------------------------------------
+        // Image API doesn't automatically create RT Dose specific tags,
+        // so we add them manually to ensure DICOM compliance
+        gdcm::DataSet& ds = file.GetDataSet();
+
+        // SOP Class UID (must match FileMetaInformation)
         gdcm::DataElement sop_class_uid(gdcm::Tag(0x0008, 0x0016));
         sop_class_uid.SetVR(gdcm::VR::UI);
         sop_class_uid.SetByteValue("1.2.840.10008.5.1.4.1.1.481.2", strlen("1.2.840.10008.5.1.4.1.1.481.2"));
@@ -760,7 +802,7 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
         series_instance_uid_elem.SetByteValue(series_instance_uid.c_str(), series_instance_uid.length());
         ds.Insert(series_instance_uid_elem);
 
-        // Modality
+        // Modality (RTDOSE for RT Dose Storage)
         gdcm::DataElement modality(gdcm::Tag(0x0008, 0x0060));
         modality.SetVR(gdcm::VR::CS);
         modality.SetByteValue("RTDOSE", strlen("RTDOSE"));
@@ -772,26 +814,13 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
         series_number.SetByteValue("1", strlen("1"));
         ds.Insert(series_number);
 
-        // Image dimensions
-        gdcm::DataElement rows(gdcm::Tag(0x0028, 0x0010));
-        rows.SetVR(gdcm::VR::US);
-        uint16_t rows_val = static_cast<uint16_t>(dim.y);
-        rows.SetByteValue(reinterpret_cast<const char*>(&rows_val), sizeof(uint16_t));
-        ds.Insert(rows);
-
-        gdcm::DataElement columns(gdcm::Tag(0x0028, 0x0011));
-        columns.SetVR(gdcm::VR::US);
-        uint16_t cols_val = static_cast<uint16_t>(dim.x);
-        columns.SetByteValue(reinterpret_cast<const char*>(&cols_val), sizeof(uint16_t));
-        ds.Insert(columns);
-
-        // Pixel Spacing
+        // Pixel Spacing (row spacing \ column spacing)
         gdcm::DataElement pixel_spacing(gdcm::Tag(0x0028, 0x0030));
         pixel_spacing.SetVR(gdcm::VR::DS);
         pixel_spacing.SetByteValue(pixel_spacing_str.c_str(), pixel_spacing_str.length());
         ds.Insert(pixel_spacing);
 
-        // Image Position Patient
+        // Image Position Patient (x \ y \ z)
         gdcm::DataElement image_position(gdcm::Tag(0x0020, 0x0032));
         image_position.SetVR(gdcm::VR::DS);
         image_position.SetByteValue(image_pos_str.c_str(), image_pos_str.length());
@@ -803,100 +832,43 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
         slice_thickness.SetByteValue("1.0", strlen("1.0"));
         ds.Insert(slice_thickness);
 
-        // RT Dose specific tags
+        // RT Dose Module - REQUIRED tags for RT Dose Storage
+        // ---------------------------------------------------
+
+        // Dose Units (0x300A, 0x0002) - Type 1 (Required)
         gdcm::DataElement dose_units(gdcm::Tag(0x300A, 0x0002));
         dose_units.SetVR(gdcm::VR::CS);
         dose_units.SetByteValue("GY", strlen("GY"));
         ds.Insert(dose_units);
 
+        // Dose Type (0x300A, 0x0004) - Type 1 (Required)
         gdcm::DataElement dose_type(gdcm::Tag(0x300A, 0x0004));
         dose_type.SetVR(gdcm::VR::CS);
         dose_type.SetByteValue("PHYSICAL", strlen("PHYSICAL"));
         ds.Insert(dose_type);
 
+        // Dose Summation Type (0x300A, 0x0006) - Type 1 (Required)
         gdcm::DataElement dose_summation_type(gdcm::Tag(0x300A, 0x0006));
         dose_summation_type.SetVR(gdcm::VR::CS);
         dose_summation_type.SetByteValue("VOLUME", strlen("VOLUME"));
         ds.Insert(dose_summation_type);
 
-        // Dose Grid Scaling
+        // Dose Grid Scaling (0x3004, 0x000A) - Type 1 (Required)
+        // CRITICAL: This value determines dose accuracy
+        // Actual dose = Pixel Value × Dose Grid Scaling
         gdcm::DataElement dose_grid_scaling_elem(gdcm::Tag(0x3004, 0x000A));
         dose_grid_scaling_elem.SetVR(gdcm::VR::DS);
         dose_grid_scaling_elem.SetByteValue(dose_grid_str.c_str(), dose_grid_str.length());
         ds.Insert(dose_grid_scaling_elem);
 
-        // Image Pixel Module - Required tags for pixel data
-
-        // Samples Per Pixel - Required
-        gdcm::DataElement samples_per_pixel(gdcm::Tag(0x0028, 0x0002));
-        samples_per_pixel.SetVR(gdcm::VR::US);
-        uint16_t samples_val = 1;  // Grayscale
-        samples_per_pixel.SetByteValue(reinterpret_cast<const char*>(&samples_val), sizeof(uint16_t));
-        ds.Insert(samples_per_pixel);
-
-        // Photometric Interpretation - Required
-        gdcm::DataElement photometric_interpretation(gdcm::Tag(0x0028, 0x0004));
-        photometric_interpretation.SetVR(gdcm::VR::CS);
-        photometric_interpretation.SetByteValue("MONOCHROME2", strlen("MONOCHROME2"));
-        ds.Insert(photometric_interpretation);
-
-        // Bits Allocated
-        gdcm::DataElement bits_allocated(gdcm::Tag(0x0028, 0x0100));
-        bits_allocated.SetVR(gdcm::VR::US);
-        uint16_t bits_alloc_val = 16;
-        bits_allocated.SetByteValue(reinterpret_cast<const char*>(&bits_alloc_val), sizeof(uint16_t));
-        ds.Insert(bits_allocated);
-
-        gdcm::DataElement bits_stored(gdcm::Tag(0x0028, 0x0101));
-        bits_stored.SetVR(gdcm::VR::US);
-        uint16_t bits_stored_val = 16;
-        bits_stored.SetByteValue(reinterpret_cast<const char*>(&bits_stored_val), sizeof(uint16_t));
-        ds.Insert(bits_stored);
-
-        gdcm::DataElement high_bit(gdcm::Tag(0x0028, 0x0102));
-        high_bit.SetVR(gdcm::VR::US);
-        uint16_t high_bit_val = 15;
-        high_bit.SetByteValue(reinterpret_cast<const char*>(&high_bit_val), sizeof(uint16_t));
-        ds.Insert(high_bit);
-
-        gdcm::DataElement pixel_representation(gdcm::Tag(0x0028, 0x0103));
-        pixel_representation.SetVR(gdcm::VR::US);
-        uint16_t pixel_rep_val = 0; // unsigned
-        pixel_representation.SetByteValue(reinterpret_cast<const char*>(&pixel_rep_val), sizeof(uint16_t));
-        ds.Insert(pixel_representation);
-
-        gdcm::DataElement rescale_intercept(gdcm::Tag(0x0028, 0x1052));
-        rescale_intercept.SetVR(gdcm::VR::DS);
-        rescale_intercept.SetByteValue("0.0", strlen("0.0"));
-        ds.Insert(rescale_intercept);
-
-        gdcm::DataElement rescale_slope(gdcm::Tag(0x0028, 0x1053));
-        rescale_slope.SetVR(gdcm::VR::DS);
-        rescale_slope.SetByteValue(dose_grid_str.c_str(), dose_grid_str.length());
-        ds.Insert(rescale_slope);
-
-        // Number of Frames
-        gdcm::DataElement number_of_frames(gdcm::Tag(0x0028, 0x0008));
-        number_of_frames.SetVR(gdcm::VR::IS);
-        number_of_frames.SetByteValue(frames_str.c_str(), frames_str.length());
-        ds.Insert(number_of_frames);
-
-        // Pixel Data - SetByteValue copies data internally, so pixel_data vector
-        // just needs to remain valid during this call (which it does)
-        size_t pixel_data_size = pixel_data.size() * sizeof(uint16_t);
-        gdcm::DataElement pixel_data_elem(gdcm::Tag(0x7FE0, 0x0010));
-        pixel_data_elem.SetVR(gdcm::VR::OW);
-        pixel_data_elem.SetByteValue(reinterpret_cast<const char*>(pixel_data.data()), pixel_data_size);
-        ds.Insert(pixel_data_elem);
-
-        {   // Inner scope: GDCM Writer object lifetime (analogous to ofstream in save_to_bin)
-            // This inner scope ensures Writer destructs BEFORE File destructs,
-            // preventing the "Invalid free() on stack memory" error.
-            // Similar to how ofstream.close() completes before the function returns in save_to_bin().
-
-            gdcm::Writer writer;
-            writer.SetFile(file);
+        // Step 4: Write DICOM file using ImageWriter
+        // ---------------------------------------------------
+        // ImageWriter handles both File metadata and Image pixel data
+        {   // Inner scope ensures Writer destructs before Image and File
+            gdcm::ImageWriter writer;
             writer.SetFileName(output_filename.c_str());
+            writer.SetFile(file);
+            writer.SetImage(image);  // Image contains copied pixel data
 
             bool write_success = writer.Write();
 
@@ -907,11 +879,11 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
 
             std::cout << "Successfully wrote DICOM file: " << output_filename << std::endl;
 
-        }   // Writer destructs here ← File references released, file writing completed
+        }   // Writer destructs here (releases File and Image references)
 
-    }   // File destructs here ← Safe cleanup (no dangling references from Writer)
+    }   // Image and File destruct here (GDCM frees its copied pixel data)
 
-    // All vectors (pixel_data, dose_data) destruct here automatically (RAII)
+    // pixel_data vector destructs here (independent from GDCM) - NO CRASH
 }
 
 #endif
