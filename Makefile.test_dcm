@@ -1,0 +1,69 @@
+# Makefile for DICOM Memory Test
+# Usage:
+#   make -f Makefile.test_dcm        # Normal build
+#   make -f Makefile.test_dcm asan   # Build with AddressSanitizer
+#   make -f Makefile.test_dcm clean  # Clean build artifacts
+
+CXX = g++
+CXXFLAGS = -std=c++11 -Wall -Wextra -g
+INCLUDES = -I. -I/usr/include/gdcm-3.0
+LDFLAGS = -lgdcmCommon -lgdcmDICT -lgdcmDSED -lgdcmIOD -lgdcmMSFF -lz
+
+TARGET = test_dcm_memory
+SOURCE = test_dcm_memory.cpp
+
+# Default target: normal build
+all: $(TARGET)
+
+# Normal build
+$(TARGET): $(SOURCE)
+	@echo "Building $(TARGET)..."
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(SOURCE) -o $(TARGET) $(LDFLAGS)
+	@echo "Build complete: ./$(TARGET)"
+	@echo ""
+	@echo "Run with:"
+	@echo "  ./$(TARGET)                    # Normal execution"
+	@echo "  ./$(TARGET) 100                # Run 100 iterations"
+	@echo "  valgrind ./$(TARGET)           # Run with Valgrind"
+	@echo "  make -f Makefile.test_dcm asan # Build with AddressSanitizer"
+
+# Build with AddressSanitizer
+asan: CXXFLAGS += -fsanitize=address -fno-omit-frame-pointer
+asan: LDFLAGS += -fsanitize=address
+asan: clean $(TARGET)
+	@echo ""
+	@echo "AddressSanitizer build complete!"
+	@echo "Run with: ASAN_OPTIONS=detect_leaks=1 ./$(TARGET)"
+
+# Build with Valgrind-friendly flags
+valgrind: CXXFLAGS += -O0
+valgrind: clean $(TARGET)
+	@echo ""
+	@echo "Valgrind-optimized build complete!"
+	@echo "Run with: valgrind --leak-check=full --show-leak-kinds=all ./$(TARGET)"
+
+# Clean
+clean:
+	@echo "Cleaning..."
+	rm -f $(TARGET)
+	rm -rf test_dcm_output
+	@echo "Clean complete"
+
+# Test runs
+test: $(TARGET)
+	@echo "Running basic test..."
+	./$(TARGET)
+
+test-valgrind: $(TARGET)
+	@echo "Running with Valgrind..."
+	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
+	         --log-file=valgrind_report.txt ./$(TARGET) 20
+	@echo "Valgrind report saved to: valgrind_report.txt"
+	@cat valgrind_report.txt
+
+test-asan: asan
+	@echo "Running with AddressSanitizer..."
+	ASAN_OPTIONS=detect_leaks=1:log_path=asan_report.txt ./$(TARGET) 20
+	@echo "AddressSanitizer report saved to: asan_report.txt.*"
+
+.PHONY: all asan valgrind clean test test-valgrind test-asan
