@@ -762,9 +762,9 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
         size_t pixel_data_size = pixel_data.size() * sizeof(uint16_t);
         
         // Create Pixel Data element (0x7FE0, 0x0010) and set the pixel data
-        gdcm::DataElement pixel_element(gdcm::Tag(0x7FE0, 0x0010));
-        pixel_element.SetVR(gdcm::VR::OB);
-        pixel_element.SetByteValue(reinterpret_cast<const char*>(pixel_data.data()), pixel_data_size);
+        gdcm::SmartPointer<gdcm::DataElement> pixel_element = new gdcm::DataElement(gdcm::Tag(0x7FE0, 0x0010));
+        pixel_element->SetVR(gdcm::VR::OB);
+        pixel_element->SetByteValue(reinterpret_cast<const char*>(pixel_data.data()), pixel_data_size);
         
 
         // Step 2: Create File and set File Meta Information
@@ -776,17 +776,17 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
         // We need to create DataElements for these and insert them into FileMetaInformation
         
         // Media Storage SOP Class UID (0x0002, 0x0002)
-        gdcm::DataElement media_storage_class(gdcm::Tag(0x0002, 0x0002));
-        media_storage_class.SetVR(gdcm::VR::UI);
-        media_storage_class.SetByteValue("1.2.840.10008.5.1.4.1.1.481.2",
+        gdcm::SmartPointer<gdcm::DataElement> media_storage_class = new gdcm::DataElement(gdcm::Tag(0x0002, 0x0002));
+        media_storage_class->SetVR(gdcm::VR::UI);
+        media_storage_class->SetByteValue("1.2.840.10008.5.1.4.1.1.481.2",
                                    strlen("1.2.840.10008.5.1.4.1.1.481.2"));
-        fmi.Insert(media_storage_class);
+        fmi.Insert(*media_storage_class);
         
         // Media Storage SOP Instance UID (0x0002, 0x0003)
-        gdcm::DataElement media_storage_instance(gdcm::Tag(0x0002, 0x0003));
-        media_storage_instance.SetVR(gdcm::VR::UI);
-        media_storage_instance.SetByteValue(sop_instance_uid.c_str(), sop_instance_uid.length());
-        fmi.Insert(media_storage_instance);
+        gdcm::SmartPointer<gdcm::DataElement> media_storage_instance = new gdcm::DataElement(gdcm::Tag(0x0002, 0x0003));
+        media_storage_instance->SetVR(gdcm::VR::UI);
+        media_storage_instance->SetByteValue(sop_instance_uid.c_str(), sop_instance_uid.length());
+        fmi.Insert(*media_storage_instance);
         
         fmi.SetDataSetTransferSyntax(gdcm::TransferSyntax::ImplicitVRLittleEndian);
 
@@ -797,90 +797,90 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
         gdcm::DataSet& ds = file.GetDataSet();
 
         // Insert the pixel data element into the file's dataset
-        ds.Insert(pixel_element);
+        ds.Insert(*pixel_element);
 
         // SOP Class UID (must match FileMetaInformation)
-        gdcm::DataElement sop_class_uid(gdcm::Tag(0x0008, 0x0016));
-        sop_class_uid.SetVR(gdcm::VR::UI);
-        sop_class_uid.SetByteValue("1.2.840.10008.5.1.4.1.1.481.2", strlen("1.2.840.10008.5.1.4.1.1.481.2"));
-        ds.Insert(sop_class_uid);
+        gdcm::SmartPointer<gdcm::DataElement> sop_class_uid = new gdcm::DataElement(gdcm::Tag(0x0008, 0x0016));
+        sop_class_uid->SetVR(gdcm::VR::UI);
+        sop_class_uid->SetByteValue("1.2.840.10008.5.1.4.1.1.481.2", strlen("1.2.840.10008.5.1.4.1.1.481.2"));
+        ds.Insert(*sop_class_uid);
 
         // SOP Instance UID
-        gdcm::DataElement sop_instance_uid_elem(gdcm::Tag(0x0008, 0x0018));
-        sop_instance_uid_elem.SetVR(gdcm::VR::UI);
-        sop_instance_uid_elem.SetByteValue(sop_instance_uid.c_str(), sop_instance_uid.length());
-        ds.Insert(sop_instance_uid_elem);
+        gdcm::SmartPointer<gdcm::DataElement> sop_instance_uid_elem = new gdcm::DataElement(gdcm::Tag(0x0008, 0x0018));
+        sop_instance_uid_elem->SetVR(gdcm::VR::UI);
+        sop_instance_uid_elem->SetByteValue(sop_instance_uid.c_str(), sop_instance_uid.length());
+        ds.Insert(*sop_instance_uid_elem);
 
         // Study Instance UID
-        gdcm::DataElement study_instance_uid_elem(gdcm::Tag(0x0020, 0x000D));
-        study_instance_uid_elem.SetVR(gdcm::VR::UI);
-        study_instance_uid_elem.SetByteValue(study_instance_uid.c_str(), study_instance_uid.length());
-        ds.Insert(study_instance_uid_elem);
+        gdcm::SmartPointer<gdcm::DataElement> study_instance_uid_elem = new gdcm::DataElement(gdcm::Tag(0x0020, 0x000D));
+        study_instance_uid_elem->SetVR(gdcm::VR::UI);
+        study_instance_uid_elem->SetByteValue(study_instance_uid.c_str(), study_instance_uid.length());
+        ds.Insert(*study_instance_uid_elem);
 
         // Series Instance UID
-        gdcm::DataElement series_instance_uid_elem(gdcm::Tag(0x0020, 0x000E));
-        series_instance_uid_elem.SetVR(gdcm::VR::UI);
-        series_instance_uid_elem.SetByteValue(series_instance_uid.c_str(), series_instance_uid.length());
-        ds.Insert(series_instance_uid_elem);
+        gdcm::SmartPointer<gdcm::DataElement> series_instance_uid_elem = new gdcm::DataElement(gdcm::Tag(0x0020, 0x000E));
+        series_instance_uid_elem->SetVR(gdcm::VR::UI);
+        series_instance_uid_elem->SetByteValue(series_instance_uid.c_str(), series_instance_uid.length());
+        ds.Insert(*series_instance_uid_elem);
 
         // Modality (RTDOSE for RT Dose Storage)
-        gdcm::DataElement modality(gdcm::Tag(0x0008, 0x0060));
-        modality.SetVR(gdcm::VR::CS);
-        modality.SetByteValue("RTDOSE", strlen("RTDOSE"));
-        ds.Insert(modality);
+        gdcm::SmartPointer<gdcm::DataElement> modality = new gdcm::DataElement(gdcm::Tag(0x0008, 0x0060));
+        modality->SetVR(gdcm::VR::CS);
+        modality->SetByteValue("RTDOSE", strlen("RTDOSE"));
+        ds.Insert(*modality);
 
         // Series Number
-        gdcm::DataElement series_number(gdcm::Tag(0x0020, 0x0011));
-        series_number.SetVR(gdcm::VR::IS);
-        series_number.SetByteValue("1", strlen("1"));
-        ds.Insert(series_number);
+        gdcm::SmartPointer<gdcm::DataElement> series_number = new gdcm::DataElement(gdcm::Tag(0x0020, 0x0011));
+        series_number->SetVR(gdcm::VR::IS);
+        series_number->SetByteValue("1", strlen("1"));
+        ds.Insert(*series_number);
 
         // Pixel Spacing (row spacing \ column spacing)
-        gdcm::DataElement pixel_spacing(gdcm::Tag(0x0028, 0x0030));
-        pixel_spacing.SetVR(gdcm::VR::DS);
-        pixel_spacing.SetByteValue(pixel_spacing_str.c_str(), pixel_spacing_str.length());
-        ds.Insert(pixel_spacing);
+        gdcm::SmartPointer<gdcm::DataElement> pixel_spacing = new gdcm::DataElement(gdcm::Tag(0x0028, 0x0030));
+        pixel_spacing->SetVR(gdcm::VR::DS);
+        pixel_spacing->SetByteValue(pixel_spacing_str.c_str(), pixel_spacing_str.length());
+        ds.Insert(*pixel_spacing);
 
         // Image Position Patient (x \ y \ z)
-        gdcm::DataElement image_position(gdcm::Tag(0x0020, 0x0032));
-        image_position.SetVR(gdcm::VR::DS);
-        image_position.SetByteValue(image_pos_str.c_str(), image_pos_str.length());
-        ds.Insert(image_position);
+        gdcm::SmartPointer<gdcm::DataElement> image_position = new gdcm::DataElement(gdcm::Tag(0x0020, 0x0032));
+        image_position->SetVR(gdcm::VR::DS);
+        image_position->SetByteValue(image_pos_str.c_str(), image_pos_str.length());
+        ds.Insert(*image_position);
 
         // Slice Thickness
-        gdcm::DataElement slice_thickness(gdcm::Tag(0x0018, 0x0050));
-        slice_thickness.SetVR(gdcm::VR::DS);
-        slice_thickness.SetByteValue("1.0", strlen("1.0"));
-        ds.Insert(slice_thickness);
+        gdcm::SmartPointer<gdcm::DataElement> slice_thickness = new gdcm::DataElement(gdcm::Tag(0x0018, 0x0050));
+        slice_thickness->SetVR(gdcm::VR::DS);
+        slice_thickness->SetByteValue("1.0", strlen("1.0"));
+        ds.Insert(*slice_thickness);
 
         // RT Dose Module - REQUIRED tags for RT Dose Storage
         // ---------------------------------------------------
 
         // Dose Units (0x300A, 0x0002) - Type 1 (Required)
-        gdcm::DataElement dose_units(gdcm::Tag(0x300A, 0x0002));
-        dose_units.SetVR(gdcm::VR::CS);
-        dose_units.SetByteValue("GY", strlen("GY"));
-        ds.Insert(dose_units);
+        gdcm::SmartPointer<gdcm::DataElement> dose_units = new gdcm::DataElement(gdcm::Tag(0x300A, 0x0002));
+        dose_units->SetVR(gdcm::VR::CS);
+        dose_units->SetByteValue("GY", strlen("GY"));
+        ds.Insert(*dose_units);
 
         // Dose Type (0x300A, 0x0004) - Type 1 (Required)
-        gdcm::DataElement dose_type(gdcm::Tag(0x300A, 0x0004));
-        dose_type.SetVR(gdcm::VR::CS);
-        dose_type.SetByteValue("PHYSICAL", strlen("PHYSICAL"));
-        ds.Insert(dose_type);
+        gdcm::SmartPointer<gdcm::DataElement> dose_type = new gdcm::DataElement(gdcm::Tag(0x300A, 0x0004));
+        dose_type->SetVR(gdcm::VR::CS);
+        dose_type->SetByteValue("PHYSICAL", strlen("PHYSICAL"));
+        ds.Insert(*dose_type);
 
         // Dose Summation Type (0x300A, 0x0006) - Type 1 (Required)
-        gdcm::DataElement dose_summation_type(gdcm::Tag(0x300A, 0x0006));
-        dose_summation_type.SetVR(gdcm::VR::CS);
-        dose_summation_type.SetByteValue("VOLUME", strlen("VOLUME"));
-        ds.Insert(dose_summation_type);
+        gdcm::SmartPointer<gdcm::DataElement> dose_summation_type = new gdcm::DataElement(gdcm::Tag(0x300A, 0x0006));
+        dose_summation_type->SetVR(gdcm::VR::CS);
+        dose_summation_type->SetByteValue("VOLUME", strlen("VOLUME"));
+        ds.Insert(*dose_summation_type);
 
         // Dose Grid Scaling (0x3004, 0x000A) - Type 1 (Required)
         // CRITICAL: This value determines dose accuracy
         // Actual dose = Pixel Value × Dose Grid Scaling
-        gdcm::DataElement dose_grid_scaling_elem(gdcm::Tag(0x3004, 0x000A));
-        dose_grid_scaling_elem.SetVR(gdcm::VR::DS);
-        dose_grid_scaling_elem.SetByteValue(dose_grid_str.c_str(), dose_grid_str.length());
-        ds.Insert(dose_grid_scaling_elem);
+        gdcm::SmartPointer<gdcm::DataElement> dose_grid_scaling_elem = new gdcm::DataElement(gdcm::Tag(0x3004, 0x000A));
+        dose_grid_scaling_elem->SetVR(gdcm::VR::DS);
+        dose_grid_scaling_elem->SetByteValue(dose_grid_str.c_str(), dose_grid_str.length());
+        ds.Insert(*dose_grid_scaling_elem);
 
         // Step 4: Write DICOM file using ImageWriter
         // ---------------------------------------------------
