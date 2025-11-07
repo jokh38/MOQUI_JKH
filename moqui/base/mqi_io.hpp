@@ -757,19 +757,37 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
         image.SetPixelFormat(gdcm::PixelFormat::UINT16);
         image.SetPhotometricInterpretation(gdcm::PhotometricInterpretation::MONOCHROME2);
 
-        // CRITICAL: SetBuffer COPIES pixel data into Image's internal storage
-        // This prevents the memory ownership conflict that caused "free(): invalid size"
+        // CRITICAL: In GDCM 3.0, SetBuffer() was removed. We need to create a DataElement
+        // for pixel data and insert it into the DataSet directly
         size_t pixel_data_size = pixel_data.size() * sizeof(uint16_t);
-        image.SetBuffer(reinterpret_cast<const char*>(pixel_data.data()), pixel_data_size);
+        
+        // Create Pixel Data element (0x7FE0, 0x0010) and set the pixel data
+        gdcm::DataElement pixel_element(gdcm::Tag(0x7FE0, 0x0010));
+        pixel_element.SetVR(gdcm::VR::OB);
+        pixel_element.SetByteValue(reinterpret_cast<const char*>(pixel_data.data()), pixel_data_size);
+        
 
         // Step 2: Create File and set File Meta Information
         // ---------------------------------------------------
         gdcm::File file;
         gdcm::FileMetaInformation& fmi = file.GetHeader();
 
-        // RT Dose Storage SOP Class UID
-        fmi.SetMediaStorageSOPClassUID("1.2.840.10008.5.1.4.1.1.481.2");
-        fmi.SetMediaStorageSOPInstanceUID(sop_instance_uid);
+        // In GDCM 3.0, SetMediaStorageSOPClassUID and SetMediaStorageSOPInstanceUID were removed.
+        // We need to create DataElements for these and insert them into FileMetaInformation
+        
+        // Media Storage SOP Class UID (0x0002, 0x0002)
+        gdcm::DataElement media_storage_class(gdcm::Tag(0x0002, 0x0002));
+        media_storage_class.SetVR(gdcm::VR::UI);
+        media_storage_class.SetByteValue("1.2.840.10008.5.1.4.1.1.481.2",
+                                   strlen("1.2.840.10008.5.1.4.1.1.481.2"));
+        fmi.Insert(media_storage_class);
+        
+        // Media Storage SOP Instance UID (0x0002, 0x0003)
+        gdcm::DataElement media_storage_instance(gdcm::Tag(0x0002, 0x0003));
+        media_storage_instance.SetVR(gdcm::VR::UI);
+        media_storage_instance.SetByteValue(sop_instance_uid.c_str(), sop_instance_uid.length());
+        fmi.Insert(media_storage_instance);
+        
         fmi.SetDataSetTransferSyntax(gdcm::TransferSyntax::ImplicitVRLittleEndian);
 
         // Step 3: Add DICOM tags to DataSet
@@ -777,6 +795,9 @@ mqi::io::save_to_dcm(const mqi::scorer<R>* src,
         // Image API doesn't automatically create RT Dose specific tags,
         // so we add them manually to ensure DICOM compliance
         gdcm::DataSet& ds = file.GetDataSet();
+
+        // Insert the pixel data element into the file's dataset
+        ds.Insert(pixel_element);
 
         // SOP Class UID (must match FileMetaInformation)
         gdcm::DataElement sop_class_uid(gdcm::Tag(0x0008, 0x0016));
